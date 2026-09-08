@@ -1,0 +1,237 @@
+        .data
+gameOverStr:   	.asciiz 	"GAME OVER\n"   # game over message string
+grid_initial:	.asciiz 	"#########\n#       #\n#       #\n#       #\n#   P   #\n#       #\n#       #\n#       #\n#########\n" # initial grid layout with player centered
+grid:           .space  	260             # buffer for current grid state
+score_initial:  .asciiz 	"Score:  0\n"   # initial score string
+score:          .space  	40              # buffer for current score string
+
+        .text
+#===============================================
+#===============================================
+#===============================================
+# Saved Variables
+# $s0 = Score
+# $s1 = Player Position (grid array index for 'P')
+# $s2 = Reward Position (grid array index for 'R')
+# $s3 = Keyboard Input (echoes 0x0ffff0004)
+
+# Main Game Loops===============================
+main:
+	jal 	init_game                   # jumping to the initial condition function manager
+main_loop:
+	jal 	input_and_game_state        # fetch valid inputs, update game state in memory
+	jal 	frame_update                # update display (clear screen, print score and grid)
+	j   	main_loop                   # repeat game loop
+#===============================================
+
+# Initialization State:
+init_game:
+	addiu   $sp, $sp, -4                # adjust stack pointer
+	sw      $ra, 0($sp)                 # save return address onto stack
+	li      $s0, 0                      # set score register to 0
+	li      $s1, 44                     # set player x position register to 44 (mid grid)
+	jal     create_reward               # create random, and set, reward x position
+	jal     init_buffers                # write onto initialized memory
+  	jal     frame_update                # print game state in memory 
+	lw      $ra, 0($sp)                 # save return address from stack
+	addiu   $sp, $sp, 4                 # adjust stack pointer
+	jr      $ra                         # back to main
+
+# Paste Strings into Initialized Memory:
+init_buffers:
+	la      $t0, grid_initial           # load address of static grid string
+	la      $t1, grid                   # load address of designated memory buffer for grid
+copy_grid_loop:
+	lb      $t2, 0($t0)                 # load byte from static mem
+	sb      $t2, 0($t1)                 # store byte into initialized me
+	beq     $t2, $zero, copy_grid_done  # jump out on null terminator
+	addi    $t0, $t0, 1                 # increment source pointer
+	addi    $t1, $t1, 1                 # increment destination pointer
+	j       copy_grid_loop              # repeat loop
+copy_grid_done:
+	la      $t0, score_initial          # load address of static score string
+	la      $t1, score                  # load address of designated memory buffer for score
+copy_score_loop:			    # same exact loop and copy_grid_loop, repeated for ease of reading and coding. Comments apply, $t0 and $t1 changed to score related addresses
+	lb      $t2, 0($t0)              
+	sb      $t2, 0($t1)              
+	beq     $t2, $zero, copy_score_done 
+	addi    $t0, $t0, 1                 
+	addi    $t1, $t1, 1                 
+	j       copy_score_loop             
+copy_score_done:
+	jr      $ra                         # back to init_buffers
+
+# Create Valid Random Reward Position:
+create_reward:
+	li      $v0, 42                     # get random num, between (exclusive) 0 and 78, from syscall 42
+	li      $a0, 1         
+	li      $a1, 78                    
+	syscall                         
+	move    $t0, $a0                    # possible rewards position moved to $t0
+	li      $t2, 10                     # load immediate for branching
+	ble     $t0, $t2, create_reward     # if (possible reward) <= 10, recreate reward
+	li      $t3, 10                     # load immediate for branching
+	div     $t0, $t3                    # divide possible reward by 10
+	mfhi    $t1                         # $t1 = (possible reward) % 10
+	ble     $t1, $zero, create_reward   # if (possible reward) % 10 <= 0 (left limit), recreate reward
+	li      $t2, 8                      # load immediate for branching
+	bge     $t1, $t2, create_reward     # if (possible reward) % 10 >= 8 (right limit), recreate reward
+	beq     $t0, $s1, create_reward     # if (possible reward) == (player position), recreate reward
+	move    $s2, $t0                    # load valid possible reward in $s2
+	jr      $ra                         # return (multiple pathways)
+
+# Frame Clearing and Reprint:
+frame_update:
+	addiu   $sp, $sp, -4                # adjust stack pointer
+	sw      $ra, 0($sp)                 # save return address onto stack
+	li      $t1, 'R'                    # load value for R on $t1
+	sb      $t1, grid($s2)              # place reward character in grid at index $s2 (reduntdant but good measure to avoid related bugs)
+	li      $t0, 20                     # amount of newline (loop counter)
+clear_screen:
+	jal     wait_transmitter            # wait for display transmitter
+	li      $t1, '\n'                   # load '\n' character
+	sw      $t1, 0xFFFF000C             # move $t1 to memory mapped display
+	subiu   $t0, $t0, 1                 # decrement counter
+	bgtz    $t0, clear_screen           # repeat until counter == zero
+	la      $a0, score                  # load and print (call function) score
+	jal     print_string               
+	la      $a0, grid                   # load and print (call function) grid
+	jal     print_string               
+	lw      $ra, 0($sp)                 # save return address from stack
+	addiu   $sp, $sp, 4                 # adjust stack pointer
+	jr      $ra                         # return (multiple pathways)
+
+print_string:
+	addiu   $sp, $sp, -4                # allocate stack space for return address
+	sw      $ra, 0($sp)                 # save return address
+print_string_loop:
+	lb      $t0, 0($a0)                 # load char from string address
+	beq     $t0, $zero, end_print       # exit loop if null terminator encountered
+	jal     wait_transmitter            # wait for display transmitter
+	sw      $t0, 0xFFFF000C             # move $t1 to memory mapped display
+	addi    $a0, $a0, 1                 # increment address of string (next 'char')
+	j       print_string_loop           # repeat loop
+end_print:
+	lw      $ra, 0($sp)                 # save return address from stack
+	addiu   $sp, $sp, 4                 # adjust stack pointer
+	jr      $ra                         # return (multiple pathways)
+
+# Function to Wait for Display Ready Bit:
+wait_transmitter:
+	lw      $t1, 0xFFFF0008             # load transmitter data register
+	andi    $t1, $t1, 1                 # isolate the ready bit
+	beq     $t1, $zero, wait_transmitter# if not, loop
+	jr      $ra                         # return (multiple pathways)
+
+# Single Call to Wait for First Input:
+wait_input:
+	lw      $t0, 0xFFFF0000             # load keyboard control register value
+	andi    $t0, $t0, 1                 # check if keyboard Ready bit is set
+	beq     $t0, $zero, wait_input      # if no key pressed, continue polling
+	jr      $ra                         # return from wait_input
+
+# Input Manager and Function Caller for State Changes:
+input_and_game_state:
+	addiu   $sp, $sp, -4                # adjust stack pointer
+	sw      $ra, 0($sp)                 # save return address onto stack
+	li      $t0, 32                     # load 32 (same as ' ' in ascii)
+	sb      $t0, grid($s1)              # overwrite player's previous position in grid index (do it regardless, saves code complexity)
+	jal     wait_input		    # wait for input
+	lw      $s3, 0xFFFF0004             # save input from reciever data register
+	li      $t0, 'w'                    # load immediate for branching
+	beq     $s3, $t0, jump_w            # branch for w
+	li      $t0, 'a'                    # load immediate for branching
+	beq     $s3, $t0, jump_a            # branch for a
+	li      $t0, 's'                    # load immediate for branching
+	beq     $s3, $t0, jump_s            # branch for s
+	li      $t0, 'd'                    # load immediate for branching
+	beq     $s3, $t0, jump_d            # branch for d
+	j       continue_pos_update         # jump to after collision check
+	
+# Validate Next 'P' Position, Branch Accordingly:
+update_position:
+	la      $t3, grid                   # load base address of grid buffer
+	add     $t4, $t3, $s1               # compute address of new player position (grid + offset $s1)
+	lb      $t5, 0($t4)                 # load character at new position
+	li      $t6, 'R'                    # load ASCII for 'R'
+	beq     $t5, $t6, update_score      # if cell contains reward, update score
+	li      $t6, '#'                    # load ASCII for wall character '#'
+	beq     $t5, $t6, game_over         # if cell is wall, trigger game over
+
+# Update 'P' in Memory:
+continue_pos_update:
+	la      $t3, grid                   # load address of designated memory buffer for grid
+	add     $t4, $t3, $s1               # $t4 set to new player position ($t4 = (old position) - (array index offset))
+	li      $t6, 'P'                    # load value for P on $t6
+	sb      $t6, 0($t4)                 # move P into its new position in grid (grid[(new position)] = 'P')
+	lw      $ra, 0($sp)                 # save return address from stack
+	addiu   $sp, $sp, 4                 # adjust stack pointer
+	jr      $ra                         # return to main_loop
+
+# Position Updating Functions:
+jump_w:
+	subi    $s1, $s1, 10                # substract player index by 10 (move up)(quirk of having one array for the whole grid)
+	j       update_position             # jump to collision check
+jump_a:
+	subi    $s1, $s1, 1                 # substract player index by 1 (move left)
+	j       update_position             # jump to collision check
+jump_s:
+	addi    $s1, $s1, 10                # add player index by 10 (move down)(quirk of having one array for the whole grid)
+	j       update_position             # jump to collision check
+jump_d:
+	addi    $s1, $s1, 1                 # add player index by 1 (move right)
+	j       update_position             # jump to collision check
+
+# Socre Update in Memory:
+update_score:
+	la      $t0, score                  # load address of designated memory buffer for score
+	lb      $t1, 7($t0)                 # loads address of second to last character in string (fixed length)
+	lb      $t2, 8($t0)                 # loads address of last character in string
+	subi    $t1, $t1, 48                # ASCII to int for arithmetic calculations
+	subi    $t2, $t2, 48                # ASCII to int for arithmetic calculations
+	addi    $t2, $t2, 5                 # adds 5 to last character in string's register
+	li      $t4, 10                     # load 10 for division
+	div     $t2, $t4                    # divide last character by 10
+	mflo    $t5                         # retrieve carry
+	mfhi    $t2                         # set last string character to division modulus
+	add     $t1, $t1, $t5               # add carry to second to last character
+	beq     $t1, 10, game_won           # if second to last character, after operations, is equal to 10 (i.e. score 100) branch to game_won
+	addi    $t1, $t1, 48                # int to ASCII before saving to memory
+	addi    $t2, $t2, 48                # int to ASCII before saving to memory
+	li      $t3, 33                     # load '!' for branching (explained at function)
+	beq     $t1, $t3, first_char_exception # if second to last character, after operations, is equal to '!', branch to first_char_exception
+update_digits:
+	sb      $t1, 7($t0)                 # store second to last character in string
+	sb      $t2, 8($t0)                 # store last character in string
+	jal     create_reward               # generate new reward by calling function
+	j       continue_pos_update         # return to main_loop
+first_char_exception:			    # since I'm going from (Score:  0) to (Score: 10), a space character can be acidentally incremented and become a '!' after the second reward
+	li      $t1, 49                     # set the second to last character (problem character) to 1 in ASCII
+	j       update_digits               # return to update_digits (essencially same as jr $ra here, since this is a single use function)
+	
+# Score Update for Winning Case:
+game_won:
+	li      $t1, 49                     # load immediate for ASCII 1
+	sb      $t1, 6($t0)                 # store immediate in third to last character in string
+	li      $t1, 48                     # load immediate for ASCII 0
+	sb      $t1, 7($t0)                 # store immediate in second to last character in string
+	li      $t1, 48                     # load immediate for ASCII 0
+	sb      $t1, 8($t0)                 # store immediate in last character in string
+	j       game_over                   # jump to game_over
+
+# Game Over Loop:
+game_over:
+	li      $t0, 30                     # load immediate (loop counter)
+clear_end_screen:
+	jal     wait_transmitter            # # wait for display transmitter
+	li      $t1, '\n'                   # load '\n' character
+	sw      $t1, 0xFFFF000C             # move $t1 to memory mapped display
+	subiu   $t0, $t0, 1                 # decrement counter
+	bgtz    $t0, clear_end_screen       # repeat until counter == zero
+	la      $a0, gameOverStr            # load address of static game over string
+	jal     print_string                # call print function
+	la      $a0, score                  # load address of score string
+	jal     print_string                # call print function
+	li      $v0, 10                     # exit through syscall
+    	syscall                             # execute
+    	
